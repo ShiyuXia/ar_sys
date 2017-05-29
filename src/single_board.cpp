@@ -37,6 +37,9 @@ class ArSysSingleBoard
 		bool draw_markers_cube;
 		bool draw_markers_axis;
         bool publish_tf;
+        bool offset_received;
+        geometry_msgs::Point t_offset;
+        geometry_msgs::Point a_offset;
 		MarkerDetector mDetector;
 		vector<Marker> markers;
 		BoardConfiguration the_board_config;
@@ -50,8 +53,12 @@ class ArSysSingleBoard
 		ros::Publisher transform_pub; 
 		ros::Publisher position_pub;
 		ros::Publisher center_pos;
+		ros::Publisher control_feedback;
+		ros::Subscriber offset_sub;
 		std::string board_frame;
 
+		cv::Point origin;
+		cv::Point c0;
 		double marker_size;
 		std::string board_config;
 
@@ -64,18 +71,22 @@ class ArSysSingleBoard
 	public:
 		ArSysSingleBoard()
 			: cam_info_received(false), 
+			offset_received(false),
 			nh("~"), 
 			it(nh)
 		{
+			origin = cv::Point(320,240);
 			image_sub = it.subscribe("/image", 1, &ArSysSingleBoard::image_callback, this);
 			cam_info_sub = nh.subscribe("/camera_info", 1, &ArSysSingleBoard::cam_info_callback, this);
+			offset_sub = nh.subscribe("/track/offset", 10, &ArSysSingleBoard::offset_callback, this);
 
 			image_pub = it.advertise("result", 1);
 			debug_pub = it.advertise("debug", 1);
 			pose_pub = nh.advertise<geometry_msgs::PoseStamped>("pose", 100);
 			transform_pub = nh.advertise<geometry_msgs::TransformStamped>("transform", 100);
 			position_pub = nh.advertise<geometry_msgs::Vector3Stamped>("position", 100);
-			center_pos = nh.advertise<geometry_msgs::Point>("point", 100);
+			center_pos = nh.advertise<geometry_msgs::Point>("offset", 100);
+			control_feedback = nh.advertise<geometry_msgs::Point>("ar_offset", 100);
 
 			nh.param<double>("marker_size", marker_size, 0.05);
 			nh.param<std::string>("board_config", board_config, "boardConfiguration.yml");
@@ -192,17 +203,17 @@ class ArSysSingleBoard
 						}
 						if (markers[i].id == 111) {
 							//cv::Point c0 = getCenter(markers[i]);
-							cv::Point c0 = markers[i].getCenter();
+							c0 = markers[i].getCenter();
 							cout << "Single board, center is at: " << c0 << "\n";
 							//cv::Point c0 = cv::Point(14.5,46.67);
 							float center [2] = {c0.x, c0.y};
-							geometry_msgs::Point offsetMsg;
-							offsetMsg.x = center[0] - 320;
-							offsetMsg.y = center[1] - 240;
-							offsetMsg.z = getSize(markers[i]);
-							center_pos.publish(offsetMsg);
-							// draw a line to the center
-							cv::Point origin = cv::Point(320,240);
+							//geometry_msgs::Point offsetMsg;
+							// calculate offset:
+							a_offset.x = center[0] - 320;
+							a_offset.y = center[1] - 240;
+							//offsetMsg.z = getSize(markers[i]);
+							control_feedback.publish(a_offset);
+							// draw a line to the centeR
 							cv::line( resultImg, origin, c0,cv::Scalar(255,255,0),4,CV_AA);
 						} 
 						/*
@@ -304,6 +315,18 @@ class ArSysSingleBoard
 					if (probDetect > 0.0) CvDrawingUtils::draw3dAxis(resultImg, the_board_detected, camParam);
 				}
 
+				// draw a cross at object tracking location:
+				if (offset_received == true) {
+					//control_feedback.publish(t_offset);
+					cout << "tracking result: " << t_offset.x << " " << t_offset.y << "\n";
+					cv::Point t_location = cv::Point(t_offset.x + 320, t_offset.y + 240);
+					cv::line( resultImg, origin, t_location,cv::Scalar(255,255,0),4,CV_AA);
+				} /*else {
+					control_feedback.publish(a_offset);
+					// draw a line to the centeR
+					cv::line( resultImg, origin, c0,cv::Scalar(255,255,0),4,CV_AA);
+				}*/
+
 				if(image_pub.getNumSubscribers() > 0)
 				{
 					//show input with augmented information
@@ -331,6 +354,7 @@ class ArSysSingleBoard
 				ROS_ERROR("cv_bridge exception: %s", e.what());
 				return;
 			}
+			offset_received = false;
 		}
 
 		// wait for one camerainfo, then shut down that subscriber
@@ -340,6 +364,15 @@ class ArSysSingleBoard
 			cam_info_received = true;
 			cam_info_sub.shutdown();
 		}
+
+		void offset_callback(const geometry_msgs::Point offset)
+		{
+			offset_received = true;
+			cout << "received offset " << offset.x << " " << offset.y << "\n";
+			t_offset.x = offset.x;
+			t_offset.y = offset.y;
+		}
+
 
 		// input: A marker,
 		// output: the distance between the centor of the marker to centor of the image
